@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Birthday Card Generator</title>
+
+  <!-- =========================
+       KERNEL / CONFIG (EDIT HERE)
+       ========================= -->
+  <script>
+  const CFG = {
+    // ---- Template
+    TEMPLATE_SRC: "template.png",   // letakkan PNG template di folder yang sama
+    OUTPUT_PREFIX: "birthday-card",
+
+    // ---- Text rendering (Nama)
+    NAME_TEXT: {
+      // Posisi (pixel). Kalau mau relatif, isi null dan pakai REL_Y
+      X: null,               // null => otomatis center canvas
+      Y: null,               // null => pakai REL_Y
+      REL_Y: 0.64,           // 0.0 - 1.0 (persentase tinggi canvas)
+
+      // Area text
+      MAX_WIDTH_RATIO: 0.80, // 0.0 - 1.0 (lebar area teks dibanding canvas)
+
+      // Font
+      FONT_FAMILY: '"Times New Roman", serif', // ganti sesuai font yang kamu mau
+      FONT_WEIGHT: 700,
+      FONT_STYLE: "normal",  // "normal" | "italic"
+      BASE_SIZE: 72,         // ukuran awal (px)
+      MIN_SIZE: 18,          // batas minimum jika nama panjang
+      LINE_HEIGHT: 1.15,     // untuk mode 2 baris (wrap)
+
+      // Color & alignment
+      COLOR: "#1c2d57",
+      ALIGN: "center",       // "left" | "center" | "right"
+
+      // Behavior
+      ENABLE_WRAP_2LINES: true,  // kalau true: nama bisa diwrap max 2 baris
+      WRAP_MAX_LINES: 2,
+      WRAP_WORDS: true,          // wrap by words (true) vs by chars (false)
+    },
+
+    // ---- Batch generation
+    BATCH: {
+      ENABLE_PREVIEW: true,       // tampilkan preview grid
+      PREVIEW_MAX: 12,            // batasi preview agar tidak berat
+      ZIP_FILENAME: "birthday-cards.zip",
+      IMAGE_TYPE: "image/png",    // "image/png" recommended
+    },
+
+    // ---- Performance
+    RENDER_SCALE: 1,              // 1 = resolusi asli template; >1 untuk upscale (lebih berat)
+  };
+  </script>
+
+  <!-- JSZip (gratis) untuk download semua sekaligus jadi .zip -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+  <style>
+    :root { --gap: 12px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px; max-width: 980px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin: 12px 0; }
+    textarea, input, button { width: 100%; padding: 12px; margin: 8px 0; font-size: 16px; border-radius: 10px; border: 1px solid #d1d5db; }
+    button { cursor: pointer; border: none; background: #111827; color: white; }
+    button.secondary { background: #374151; }
+    button.ghost { background: transparent; color: #111827; border: 1px solid #d1d5db; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
+    @media (max-width: 860px){ .row { grid-template-columns: 1fr; } }
+    .meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 14px; color: #374151; }
+    .pill { background: #f3f4f6; padding: 6px 10px; border-radius: 999px; }
+    .previewGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); margin-top: 12px; }
+    @media (max-width: 860px){ .previewGrid { grid-template-columns: repeat(2, 1fr); } }
+    .thumb { border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; background: #fff; }
+    .thumb img { width: 100%; display: block; }
+    .thumb .cap { padding: 8px 10px; font-size: 13px; color: #374151; display:flex; justify-content: space-between; gap: 8px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }
+    .warn { color: #b45309; font-size: 13px; }
+  </style>
+</head>
+
+<body>
+  <h1>Birthday Card Generator (Batch)</h1>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label><b>Daftar Nama (1 per baris)</b></label>
+        <textarea id="names" rows="10" placeholder="Contoh:
+Pak Wirjanto Wangsaawinata
+Ibu Maria Siregar
+Udin Sedunia"></textarea>
+
+        <div class="meta">
+          <span class="pill">Jumlah nama: <b id="countNames">0</b></span>
+          <span class="pill">Jumlah gambar: <b id="countImages">0</b></span>
+        </div>
+
+        <div class="warn" id="warnZip"></div>
+
+        <button id="btnGenerate">Generate Preview</button>
+        <button id="btnDownloadZip" class="secondary">Download Semua (ZIP)</button>
+        <button id="btnDownloadSeq" class="ghost">Download Satu-Satu (Berurutan)</button>
+      </div>
+
+      <div>
+        <label><b>Status</b></label>
+        <div class="card" style="margin: 0;">
+          <div id="status">Siap.</div>
+          <div style="margin-top: 8px; font-size: 13px; color:#374151;">
+            Template: <code id="tplName"></code><br/>
+            Mode: <code>Canvas client-side</code><br/>
+            Config edit: <code>CFG</code> di bagian atas file.
+          </div>
+        </div>
+
+        <!-- Canvas offscreen -->
+        <canvas id="canvas" style="display:none;"></canvas>
+      </div>
+    </div>
+
+    <div id="previewWrap" class="card" style="display:none;">
+      <b>Preview</b>
+      <div id="previewGrid" class="previewGrid"></div>
+    </div>
+  </div>
+
+<script>
+/* =========================
+   CORE LOGIC
+   ========================= */
+
+const elNames = document.getElementById("names");
+const elCountNames = document.getElementById("countNames");
+const elCountImages = document.getElementById("countImages");
+const elStatus = document.getElementById("status");
+const elTplName = document.getElementById("tplName");
+const elWarnZip = document.getElementById("warnZip");
+
+const btnGenerate = document.getElementById("btnGenerate");
+const btnDownloadZip = document.getElementById("btnDownloadZip");
+const btnDownloadSeq = document.getElementById("btnDownloadSeq");
+
+const previewWrap = document.getElementById("previewWrap");
+const previewGrid = document.getElementById("previewGrid");
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+elTplName.textContent = CFG.TEMPLATE_SRC;
+
+// Load template image once
+const templateImg = new Image();
+templateImg.crossOrigin = "anonymous";
+templateImg.src = CFG.TEMPLATE_SRC;
+
+templateImg.onload = () => setStatus("Template loaded ✅");
+templateImg.onerror = () => setStatus("Gagal load template. Pastikan file template ada & namanya sesuai CFG.TEMPLATE_SRC", true);
+
+// Update counts on input
+elNames.addEventListener("input", updateCounts);
+updateCounts();
+
+function setStatus(msg, isError=false){
+  elStatus.textContent = msg;
+  elStatus.style.color = isError ? "#b91c1c" : "#111827";
+}
+
+function parseNames(raw){
+  return raw
+    .split("\n")
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function updateCounts(){
+  const names = parseNames(elNames.value);
+  elCountNames.textContent = String(names.length);
+  elCountImages.textContent = String(names.length);
+
+  // ZIP warning (optional)
+  if (names.length > 80) {
+    elWarnZip.textContent = "Catatan: nama sangat banyak. ZIP bisa berat/lemot di HP. Pertimbangkan split batch (misal 40-60 per run).";
+  } else {
+    elWarnZip.textContent = "";
+  }
+}
+
+function getNameTextPosition(){
+  const w = canvas.width;
+  const h = canvas.height;
+  const x = (CFG.NAME_TEXT.X === null) ? Math.round(w/2) : CFG.NAME_TEXT.X;
+  const y = (CFG.NAME_TEXT.Y === null) ? Math.round(h * CFG.NAME_TEXT.REL_Y) : CFG.NAME_TEXT.Y;
+  return { x, y };
+}
+
+function setFont(sizePx){
+  const t = CFG.NAME_TEXT;
+  ctx.font = `${t.FONT_STYLE} ${t.FONT_WEIGHT} ${sizePx}px ${t.FONT_FAMILY}`;
+}
+
+function measure(text, sizePx){
+  setFont(sizePx);
+  return ctx.measureText(text).width;
+}
+
+function wrapTextMaxLines(text, maxWidth, sizePx, maxLines, byWords=true){
+  // Returns array of lines (<= maxLines), tries greedy wrap.
+  setFont(sizePx);
+
+  const units = byWords ? text.split(/\s+/) : [...text];
+  if (units.length === 1) return [text];
+
+  const lines = [];
+  let cur = "";
+
+  for (let i=0; i<units.length; i++){
+    const token = units[i];
+    const candidate = cur ? (byWords ? cur + " " + token : cur + token) : token;
+
+    if (ctx.measureText(candidate).width <= maxWidth){
+      cur = candidate;
+    } else {
+      if (!cur) {
+        // single token too long: hard cut
+        lines.push(candidate);
+        cur = "";
+      } else {
+        lines.push(cur);
+        cur = token;
+      }
+      if (lines.length === maxLines) break;
+    }
+  }
+  if (lines.length < maxLines && cur) lines.push(cur);
+
+  // If still leftover tokens (meaning we exceeded), return null to signal doesn't fit
+  const consumed = lines.join(byWords ? " " : "").replace(/\s+/g,"").length;
+  const total = text.replace(/\s+/g,"").length;
+  if (consumed < total) return null;
+
+  return lines;
+}
+
+function chooseLayoutAndSize(name, maxWidth){
+  const t = CFG.NAME_TEXT;
+  // Try 1 line first, shrink if needed.
+  for (let size = t.BASE_SIZE; size >= t.MIN_SIZE; size--){
+    if (measure(name, size) <= maxWidth){
+      return { size, lines: [name] };
+    }
+  }
+
+  if (!t.ENABLE_WRAP_2LINES) {
+    // Force min size 1 line
+    return { size: t.MIN_SIZE, lines: [name] };
+  }
+
+  // Try wrapping into <= WRAP_MAX_LINES, also with shrinking.
+  for (let size = t.BASE_SIZE; size >= t.MIN_SIZE; size--){
+    const lines = wrapTextMaxLines(name, maxWidth, size, t.WRAP_MAX_LINES, t.WRAP_WORDS);
+    if (lines && lines.length <= t.WRAP_MAX_LINES) {
+      // Ensure each line fits
+      const ok = lines.every(line => measure(line, size) <= maxWidth);
+      if (ok) return { size, lines };
+    }
+  }
+
+  // Last resort: min size with hard wrap attempt
+  const lines = wrapTextMaxLines(name, maxWidth, t.MIN_SIZE, t.WRAP_MAX_LINES, t.WRAP_WORDS) || [name];
+  return { size: t.MIN_SIZE, lines };
+}
+
+async function renderCard(name){
+  // Ensure template loaded
+  if (!templateImg.naturalWidth) throw new Error("Template belum ter-load.");
+
+  const scale = CFG.RENDER_SCALE || 1;
+  const w = Math.round(templateImg.naturalWidth * scale);
+  const h = Math.round(templateImg.naturalHeight * scale);
+
+  canvas.width = w;
+  canvas.height = h;
+
+  // draw template
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(templateImg, 0, 0, w, h);
+
+  // draw name
+  const t = CFG.NAME_TEXT;
+  const pos = getNameTextPosition();
+
+  const maxWidth = w * t.MAX_WIDTH_RATIO;
+
+  ctx.fillStyle = t.COLOR;
+  ctx.textAlign = t.ALIGN;
+  ctx.textBaseline = "middle";
+
+  const layout = chooseLayoutAndSize(name, maxWidth);
+
+  setFont(layout.size);
+
+  const lineH = layout.size * t.LINE_HEIGHT;
+  const lines = layout.lines;
+
+  // vertical centering across lines
+  const totalH = (lines.length - 1) * lineH;
+  const y0 = pos.y - totalH / 2;
+
+  for (let i=0; i<lines.length; i++){
+    ctx.fillText(lines[i], pos.x, y0 + i * lineH);
+  }
+
+  // output blob
+  const blob = await new Promise(res => canvas.toBlob(res, CFG.BATCH.IMAGE_TYPE));
+  if (!blob) throw new Error("Gagal membuat image blob.");
+  return blob;
+}
+
+function safeFilename(name){
+  // Keep simple and filesystem-friendly
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 60) || "name";
+}
+
+async function generatePreview(){
+  const names = parseNames(elNames.value);
+  if (!names.length) { setStatus("Masukkan minimal 1 nama.", true); return; }
+  if (!templateImg.naturalWidth) { setStatus("Template belum loaded. Cek file template.", true); return; }
+
+  setStatus("Generate preview...");
+  previewGrid.innerHTML = "";
+  previewWrap.style.display = CFG.BATCH.ENABLE_PREVIEW ? "block" : "none";
+  if (!CFG.BATCH.ENABLE_PREVIEW) {
+    setStatus("Preview dimatikan (CFG.BATCH.ENABLE_PREVIEW=false).");
+    return;
+  }
+
+  const maxPrev = Math.min(names.length, CFG.BATCH.PREVIEW_MAX);
+  for (let i=0; i<maxPrev; i++){
+    const nm = names[i];
+    const blob = await renderCard(nm);
+    const url = URL.createObjectURL(blob);
+
+    const div = document.createElement("div");
+    div.className = "thumb";
+    div.innerHTML = `
+      <img src="${url}" alt="preview"/>
+      <div class="cap">
+        <span title="${nm}">${nm.length>18 ? nm.slice(0,18)+"…" : nm}</span>
+        <button class="ghost" style="width:auto;padding:6px 10px;font-size:12px;"
+          data-url="${url}" data-name="${nm}">DL</button>
+      </div>
+    `;
+    previewGrid.appendChild(div);
+
+    div.querySelector("button").onclick = (e) => {
+      const u = e.currentTarget.getAttribute("data-url");
+      const n = e.currentTarget.getAttribute("data-name");
+      downloadBlobUrl(u, `${CFG.OUTPUT_PREFIX}_${safeFilename(n)}.png`);
+    };
+  }
+
+  if (names.length > maxPrev) {
+    const more = document.createElement("div");
+    more.style.gridColumn = "1 / -1";
+    more.style.color = "#6b7280";
+    more.style.fontSize = "13px";
+    more.textContent = `Preview dibatasi ${maxPrev} dari ${names.length} nama (CFG.BATCH.PREVIEW_MAX).`;
+    previewGrid.appendChild(more);
+  }
+
+  setStatus(`Preview selesai ✅ (${maxPrev} ditampilkan)`);
+}
+
+function downloadBlobUrl(url, filename){
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+}
+
+async function downloadAllZip(){
+  const names = parseNames(elNames.value);
+  if (!names.length) { setStatus("Masukkan minimal 1 nama.", true); return; }
+  if (!templateImg.naturalWidth) { setStatus("Template belum loaded. Cek file template.", true); return; }
+  if (typeof JSZip === "undefined") { setStatus("JSZip tidak ter-load. Cek koneksi internet / CDN.", true); return; }
+
+  btnDownloadZip.disabled = true;
+  btnGenerate.disabled = true;
+  btnDownloadSeq.disabled = true;
+
+  try {
+    setStatus("Membuat ZIP...");
+    const zip = new JSZip();
+
+    for (let i=0; i<names.length; i++){
+      const nm = names[i];
+      setStatus(`Render ${i+1}/${names.length}: ${nm}`);
+      const blob = await renderCard(nm);
+      const fname = `${CFG.OUTPUT_PREFIX}_${safeFilename(nm)}.png`;
+      zip.file(fname, blob);
+    }
+
+    setStatus("Mengompres ZIP...");
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const zipUrl = URL.createObjectURL(zipBlob);
+    downloadBlobUrl(zipUrl, CFG.BATCH.ZIP_FILENAME);
+    setStatus(`Selesai ✅ ZIP berisi ${names.length} gambar.`);
+  } catch (err){
+    setStatus(`Error: ${err.message}`, true);
+  } finally {
+    btnDownloadZip.disabled = false;
+    btnGenerate.disabled = false;
+    btnDownloadSeq.disabled = false;
+  }
+}
+
+async function downloadSequential(){
+  const names = parseNames(elNames.value);
+  if (!names.length) { setStatus("Masukkan minimal 1 nama.", true); return; }
+  if (!templateImg.naturalWidth) { setStatus("Template belum loaded. Cek file template.", true); return; }
+
+  btnDownloadZip.disabled = true;
+  btnGenerate.disabled = true;
+  btnDownloadSeq.disabled = true;
+
+  try {
+    setStatus("Download satu-satu dimulai...");
+
+    for (let i=0; i<names.length; i++){
+      const nm = names[i];
+      setStatus(`Render & download ${i+1}/${names.length}: ${nm}`);
+      const blob = await renderCard(nm);
+      const url = URL.createObjectURL(blob);
+      downloadBlobUrl(url, `${CFG.OUTPUT_PREFIX}_${safeFilename(nm)}.png`);
+
+      // kecilkan kemungkinan browser memblokir spam download
+      await new Promise(r => setTimeout(r, 400));
+    }
+
+    setStatus(`Selesai ✅ Download ${names.length} gambar (satu-satu).`);
+  } catch (err){
+    setStatus(`Error: ${err.message}`, true);
+  } finally {
+    btnDownloadZip.disabled = false;
+    btnGenerate.disabled = false;
+    btnDownloadSeq.disabled = false;
+  }
+}
+
+// Bind buttons
+btnGenerate.onclick = generatePreview;
+btnDownloadZip.onclick = downloadAllZip;
+btnDownloadSeq.onclick = downloadSequential;
+</script>
+
+</body>
+</html>
